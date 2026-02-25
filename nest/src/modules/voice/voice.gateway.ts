@@ -38,7 +38,7 @@ import {
  *   speculative_ready, response_interrupted,
  *   voice_changed, available_voices, error
  */
-@WebSocketGateway(5001, {
+@WebSocketGateway(3000, {
   cors: { origin: '*' },
 })
 export class VoiceGateway
@@ -130,7 +130,7 @@ export class VoiceGateway
 
   /**
    * Frontend sends text input.
-   * We forward it to Python as a `text_query` Socket.IO event.
+   * We forward it to Python as a `text_input` Socket.IO event.
    */
   @SubscribeMessage('text_input')
   async handleTextInput(client: Socket, payload: { text: string }) {

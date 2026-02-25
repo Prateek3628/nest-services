@@ -18,7 +18,7 @@ export type PythonMessageHandler = (msg: any) => Promise<void>;
  * Python server.py uses `python-socketio` with aiohttp.
  * It exposes standard Socket.IO events:
  *   - connect / disconnect (lifecycle)
- *   - text_query        (text + audio response)
+ *   - text_input        (text + audio response)
  *   - text_only_query   (text response only, no audio)
  *   - voice_input       (audio blob → STT → response)
  *   - interim_speech     (speculative processing)
@@ -191,10 +191,10 @@ export class PythonSocket implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Send a text query to Python for processing (with audio response).
-   * Maps to Python's `@sio.event text_query`.
+   * Maps to Python's `@sio.event text_input`.
    */
   sendTextQuery(sessionId: string, text: string) {
-    this.emit('text_query', { text, message: text });
+    this.emit('text_input', { text, message: text });
   }
 
   /**

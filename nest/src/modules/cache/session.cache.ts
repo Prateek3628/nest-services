@@ -3,6 +3,8 @@ import Redis from 'ioredis';
 
 @Injectable()
 export class SessionCache {
+  private memory = new Map<string, any>();
+
   constructor(@Inject('REDIS') private redis: Redis) {}
 
   private key(sessionId: string) {
@@ -10,16 +12,25 @@ export class SessionCache {
   }
 
   async get(sessionId: string) {
-    const data = await this.redis.get(this.key(sessionId));
-    return data ? JSON.parse(data) : null;
+    try {
+      const data = await this.redis.get(this.key(sessionId));
+      return data ? JSON.parse(data) : (this.memory.get(sessionId) ?? null);
+    } catch {
+      return this.memory.get(sessionId) ?? null;
+    }
   }
 
   async set(sessionId: string, payload: any) {
-    await this.redis.set(
-      this.key(sessionId),
-      JSON.stringify(payload),
-      'EX',
-      1800, // 30 min TTL (conversation lifetime)
-    );
+    this.memory.set(sessionId, payload);
+    try {
+      await this.redis.set(
+        this.key(sessionId),
+        JSON.stringify(payload),
+        'EX',
+        1800,
+      );
+    } catch {
+      // Redis unavailable – in-memory fallback already set above
+    }
   }
 }
