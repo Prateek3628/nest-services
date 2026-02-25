@@ -18,7 +18,7 @@ export type PythonMessageHandler = (msg: any) => Promise<void>;
  * Python server.py uses `python-socketio` with aiohttp.
  * It exposes standard Socket.IO events:
  *   - connect / disconnect (lifecycle)
- *   - text_input        (text + audio response)
+ *   - text_query        (text + audio response)
  *   - text_only_query   (text response only, no audio)
  *   - voice_input       (audio blob → STT → response)
  *   - interim_speech     (speculative processing)
@@ -64,7 +64,7 @@ export class PythonSocket implements OnModuleInit, OnModuleDestroy {
   // =========================================================
 
   private connect() {
-    const url = process.env.PYTHON_WS_URL || 'http://localhost:8080';
+    const url = process.env.PYTHON_WS_URL || 'http://51.38.38.66:5000';
     console.log(`🔗 Connecting to Python AI service at ${url} (Socket.IO)...`);
 
     this.socket = io(url, {
@@ -191,10 +191,10 @@ export class PythonSocket implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Send a text query to Python for processing (with audio response).
-   * Maps to Python's `@sio.event text_input`.
+   * Maps to Python's `@sio.event text_query`.
    */
   sendTextQuery(sessionId: string, text: string) {
-    this.emit('text_input', { text, message: text });
+    this.emit('text_query', { text, message: text });
   }
 
   /**

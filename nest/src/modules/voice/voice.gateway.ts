@@ -38,7 +38,7 @@ import {
  *   speculative_ready, response_interrupted,
  *   voice_changed, available_voices, error
  */
-@WebSocketGateway(3000, {
+@WebSocketGateway(5001, {
   cors: { origin: '*' },
 })
 export class VoiceGateway
@@ -130,12 +130,12 @@ export class VoiceGateway
 
   /**
    * Frontend sends text input.
-   * We forward it to Python as a `text_input` Socket.IO event.
+   * We forward it to Python as a `text_query` Socket.IO event.
    */
-  @SubscribeMessage('text_input')
+  @SubscribeMessage('text_query')
   async handleTextInput(client: Socket, payload: { text: string }) {
     const { text } = payload;
-    console.log(`💬 [${client.id}] text_input: "${text}"`);
+    console.log(`💬 [${client.id}] text_query: "${text}"`);
 
     // Track which frontend client should receive the response
     this.activeFrontendClient = client.id;
