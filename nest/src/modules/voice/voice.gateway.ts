@@ -323,10 +323,11 @@ export class VoiceGateway
     payload: { name: string; email: string; phone: string; sessionId: string },
   ) {
     const sid = payload.sessionId || client.id;
-    console.log(`📋 [${client.id}] register_user: ${payload.name} <${payload.email}>`);
+    console.log(`📋 [${client.id}] register_user: name="${payload.name}" email="${payload.email}" phone="${payload.phone}" sid="${sid}"`);
 
     try {
-      // Upsert user contact (avoid duplicates on reconnect)
+      // Step 1: Upsert user contact
+      console.log(`💾 [register_user] Step 1: upserting user_contacts for sid=${sid}`);
       const contact = await this.userContactModel.findOneAndUpdate(
         { sessionId: sid },
         {
@@ -337,8 +338,10 @@ export class VoiceGateway
         },
         { upsert: true, returnDocument: 'after' },
       );
+      console.log(`💾 [register_user] Step 1 done: contact._id=${contact?._id}`);
 
-      // Upsert conversation session and link it
+      // Step 2: Upsert conversation session and link it
+      console.log(`💾 [register_user] Step 2: upserting sessions for sid=${sid}`);
       await this.conversationModel.findOneAndUpdate(
         { sessionId: sid },
         {
@@ -348,8 +351,10 @@ export class VoiceGateway
         },
         { upsert: true, returnDocument: 'after' },
       );
+      console.log(`💾 [register_user] Step 2 done`);
 
-      // Store in Redis session cache too
+      // Step 3: Store in Redis session cache too
+      console.log(`💾 [register_user] Step 3: writing Redis session cache`);
       const sessionData = (await this.sessionCache.get(sid)) || {};
       sessionData.userInfo = {
         name: payload.name,
@@ -358,6 +363,7 @@ export class VoiceGateway
       };
       sessionData.userInfoCollected = true;
       await this.sessionCache.set(sid, sessionData);
+      console.log(`💾 [register_user] Step 3 done`);
 
       // Map this socket to the stable session ID
       this.clientToSession.set(client.id, sid);
@@ -383,10 +389,11 @@ export class VoiceGateway
         });
       }
     } catch (error: any) {
-      console.error('❌ Error registering user:', error.message);
+      console.error('❌ Error registering user:', error.message, error.stack);
       client.emit('user_registered', {
         success: false,
         message: 'Failed to save user info',
+        error: error.message,
       });
     }
   }
@@ -444,7 +451,7 @@ export class VoiceGateway
 
       client.emit('session_check_result', { exists: false });
     } catch (error: any) {
-      console.error('❌ Error checking session:', error.message);
+      console.error('❌ Error checking session:', error.message, error.stack);
       client.emit('session_check_result', { exists: false });
     }
   }
