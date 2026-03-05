@@ -7,6 +7,8 @@ import {
   OnGatewayInit,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 
 import { PythonSocket } from '../python/python.socket';
 import { PollyService } from '../tts/polly.service';
@@ -18,6 +20,15 @@ import {
   ExactResponseCache,
   TtsRelayCache,
 } from '../cache';
+
+import {
+  UserContact,
+  ConversationSession,
+} from '../database/schemas';
+import type {
+  UserContactDocument,
+  ConversationSessionDocument,
+} from '../database/schemas';
 
 /**
  * VoiceGateway – the front-facing Socket.IO gateway (port 3000).
@@ -38,7 +49,7 @@ import {
  *   speculative_ready, response_interrupted,
  *   voice_changed, available_voices, error
  */
-@WebSocketGateway(5001, {
+@WebSocketGateway({
   cors: { origin: '*' },
 })
 export class VoiceGateway
@@ -55,6 +66,9 @@ export class VoiceGateway
    */
   private activeFrontendClient: string | null = null;
 
+  /** Maps socket client.id → stable sessionId (UUID from frontend) */
+  private clientToSession: Map<string, string> = new Map();
+
   /** Greeting sent to every new frontend client. Mirrors chatbot.start_session(). */
   private readonly GREETING =
     "Hello! Welcome to TechGropse, I'm Anup, your virtual assistant. What's your name?";
@@ -67,6 +81,10 @@ export class VoiceGateway
     private readonly exactResponseCache: ExactResponseCache,
     private readonly ttsRelayCache: TtsRelayCache,
     private readonly pollyService: PollyService,
+    @InjectModel(UserContact.name)
+    private readonly userContactModel: Model<UserContactDocument>,
+    @InjectModel(ConversationSession.name)
+    private readonly conversationModel: Model<ConversationSessionDocument>,
   ) {}
 
   // =========================================================
@@ -88,29 +106,15 @@ export class VoiceGateway
     });
     console.log(`✅ Frontend client connected: ${client.id}`);
 
-    // Tell the frontend it is connected so the UI unlocks
+    // Tell the frontend it is connected so the UI unlocks.
+    // Do NOT start a Python session or send a greeting yet —
+    // wait until the user submits the info form (register_user)
+    // or an existing session is verified (check_session).
     client.emit('status', {
       message: 'Connected to TechGropse Server',
       type: 'success',
       session_id: client.id,
     });
-
-    // Ask Python to create a fresh session for this user.
-    // Python will emit back a text_response (initial_greeting) + audio,
-    // which handlePythonMessage will forward to this client automatically.
-    if (this.python.isConnected()) {
-      this.python.sendNewSession();
-    } else {
-      // Python not yet available — fall back to a local greeting so
-      // the chatbox still appears; Python will reply once it connects.
-      client.emit('text_response', {
-        response: this.GREETING,
-        message: this.GREETING,
-        type: 'initial_greeting',
-        show_chatbox: true,
-        current_field: 'name',
-      });
-    }
   }
 
   async handleDisconnect(client: Socket) {
@@ -121,6 +125,7 @@ export class VoiceGateway
       );
       this.activeFrontendClient = remaining ?? null;
     }
+    this.clientToSession.delete(client.id);
     console.log(`❌ Frontend client disconnected: ${client.id}`);
   }
 
@@ -135,15 +140,19 @@ export class VoiceGateway
   @SubscribeMessage('text_query')
   async handleTextInput(client: Socket, payload: { text: string }) {
     const { text } = payload;
-    console.log(`💬 [${client.id}] text_query: "${text}"`);
+    const sid = this.clientToSession.get(client.id) || client.id;
+    console.log(`💬 [${client.id}] text_query: "${text}" (session: ${sid})`);
 
     // Track which frontend client should receive the response
     this.activeFrontendClient = client.id;
 
+    // Store user message in MongoDB conversation
+    await this.appendMessage(sid, 'user', text);
+
     // Store query for caching
-    const sessionData = (await this.sessionCache.get(client.id)) || {};
+    const sessionData = (await this.sessionCache.get(sid)) || {};
     sessionData.lastQuery = text;
-    await this.sessionCache.set(client.id, sessionData);
+    await this.sessionCache.set(sid, sessionData);
 
     // Check exact-response cache
     const cached = await this.exactResponseCache.get('en', text);
@@ -301,6 +310,193 @@ export class VoiceGateway
   }
 
   // =========================================================
+  // FE → Nest  (user registration & availability)
+  // =========================================================
+
+  /**
+   * Frontend registers a new user (personal info form).
+   * Saves to MongoDB `user_contacts` and links to the conversation session.
+   */
+  @SubscribeMessage('register_user')
+  async handleRegisterUser(
+    client: Socket,
+    payload: { name: string; email: string; phone: string; sessionId: string },
+  ) {
+    const sid = payload.sessionId || client.id;
+    console.log(`📋 [${client.id}] register_user: ${payload.name} <${payload.email}>`);
+
+    try {
+      // Upsert user contact (avoid duplicates on reconnect)
+      const contact = await this.userContactModel.findOneAndUpdate(
+        { sessionId: sid },
+        {
+          sessionId: sid,
+          name: payload.name,
+          email: payload.email,
+          phone: payload.phone,
+        },
+        { upsert: true, returnDocument: 'after' },
+      );
+
+      // Upsert conversation session and link it
+      await this.conversationModel.findOneAndUpdate(
+        { sessionId: sid },
+        {
+          sessionId: sid,
+          userContactId: contact._id?.toString() ?? null,
+          userInfoCollected: true,
+        },
+        { upsert: true, returnDocument: 'after' },
+      );
+
+      // Store in Redis session cache too
+      const sessionData = (await this.sessionCache.get(sid)) || {};
+      sessionData.userInfo = {
+        name: payload.name,
+        email: payload.email,
+        phone: payload.phone,
+      };
+      sessionData.userInfoCollected = true;
+      await this.sessionCache.set(sid, sessionData);
+
+      // Map this socket to the stable session ID
+      this.clientToSession.set(client.id, sid);
+
+      client.emit('user_registered', {
+        success: true,
+        sessionId: sid,
+        message: 'User info saved successfully',
+      });
+
+      console.log(`✅ User registered and linked to session: ${sid}`);
+
+      // NOW start the Python session (greeting happens here, not on connect)
+      if (this.python.isConnected()) {
+        this.python.sendNewSession();
+      } else {
+        client.emit('text_response', {
+          response: this.GREETING,
+          message: this.GREETING,
+          type: 'initial_greeting',
+          show_chatbox: true,
+          current_field: 'name',
+        });
+      }
+    } catch (error: any) {
+      console.error('❌ Error registering user:', error.message);
+      client.emit('user_registered', {
+        success: false,
+        message: 'Failed to save user info',
+      });
+    }
+  }
+
+  /**
+   * Frontend checks if a session already exists (on reconnect/refresh).
+   */
+  @SubscribeMessage('check_session')
+  async handleCheckSession(
+    client: Socket,
+    payload: { sessionId: string },
+  ) {
+    const sid = payload.sessionId;
+    console.log(`🔍 [${client.id}] check_session: ${sid}`);
+
+    try {
+      // Check Redis first (fast)
+      let sessionData = await this.sessionCache.get(sid);
+
+      if (sessionData?.userInfoCollected) {
+        this.clientToSession.set(client.id, sid);
+        client.emit('session_check_result', {
+          exists: true,
+          sessionId: sid,
+          userInfo: sessionData.userInfo,
+        });
+        // Start Python session for returning user
+        if (this.python.isConnected()) this.python.sendNewSession();
+        return;
+      }
+
+      // Fallback: check MongoDB
+      const contact = await this.userContactModel.findOne({ sessionId: sid });
+      if (contact) {
+        // Re-hydrate Redis cache
+        const data = (await this.sessionCache.get(sid)) || {};
+        data.userInfo = {
+          name: contact.name,
+          email: contact.email,
+          phone: contact.phone,
+        };
+        data.userInfoCollected = true;
+        await this.sessionCache.set(sid, data);
+
+        this.clientToSession.set(client.id, sid);
+        client.emit('session_check_result', {
+          exists: true,
+          sessionId: sid,
+          userInfo: data.userInfo,
+        });
+        // Start Python session for returning user
+        if (this.python.isConnected()) this.python.sendNewSession();
+        return;
+      }
+
+      client.emit('session_check_result', { exists: false });
+    } catch (error: any) {
+      console.error('❌ Error checking session:', error.message);
+      client.emit('session_check_result', { exists: false });
+    }
+  }
+
+  /**
+   * Frontend submits availability (date/time/timezone from calendar).
+   * Save to MongoDB and forward to Python.
+   */
+  @SubscribeMessage('submit_availability')
+  async handleSubmitAvailability(
+    client: Socket,
+    payload: {
+      sessionId: string;
+      date: string;
+      time: string;
+      timezone: string;
+    },
+  ) {
+    const sid = payload.sessionId || client.id;
+    console.log(`📅 [${client.id}] submit_availability: ${payload.date} ${payload.time} ${payload.timezone}`);
+
+    this.activeFrontendClient = client.id;
+
+    try {
+      // Save availability to user_contacts
+      await this.userContactModel.findOneAndUpdate(
+        { sessionId: sid },
+        {
+          availability: {
+            date: payload.date,
+            time: payload.time,
+            timezone: payload.timezone,
+          },
+        },
+      );
+
+      // Forward the formatted availability to Python as a text_query
+      const availText = `My availability is ${payload.date} at ${payload.time} (${payload.timezone})`;
+      this.python.sendTextQuery(client.id, availText);
+
+      // Also log in conversation
+      await this.appendMessage(sid, 'user', availText);
+
+      client.emit('availability_saved', { success: true });
+      console.log(`✅ Availability saved for session: ${sid}`);
+    } catch (error: any) {
+      console.error('❌ Error saving availability:', error.message);
+      client.emit('availability_saved', { success: false });
+    }
+  }
+
+  // =========================================================
   // Python → Nest  (responses from Python AI)
   // =========================================================
 
@@ -333,6 +529,11 @@ export class VoiceGateway
         console.log(`📝 Python text_response: "${responseText.substring(0, 60)}…"`);
 
         if (client) {
+          // Detect calendar trigger: Python wants to collect datetime
+          const isCalendarTrigger =
+            msg.contact_form_state === 'collecting_datetime' ||
+            msg.current_field === 'datetime';
+
           // Forward text to frontend
           client.emit('text_response', {
             response: responseText,
@@ -343,17 +544,32 @@ export class VoiceGateway
             contact_form_state: msg.contact_form_state,
           });
 
+          // If Python wants datetime, tell frontend to show the calendar
+          if (isCalendarTrigger) {
+            console.log('📅 TRIGGER_CONTACT_FORM → sending show_calendar to frontend');
+            client.emit('show_calendar', {
+              message: responseText,
+            });
+          }
+
           // Also emit stream_complete so frontend knows response is done
           client.emit('stream_complete', {
             fullResponse: responseText,
             metadata: { intent: msg.intent },
           });
 
+          // Store assistant message in MongoDB conversation
+          const sid = this.clientToSession.get(client.id) || client.id;
+          await this.appendMessage(sid, 'assistant', responseText);
+
           // Cache the response
-          const sessionData = await this.sessionCache.get(client.id);
+          const sessionData = await this.sessionCache.get(sid);
           if (sessionData?.lastQuery) {
             await this.exactResponseCache.set('en', sessionData.lastQuery, responseText);
           }
+
+          // Generate Polly TTS audio and send to frontend
+          await this.emitPollyAudio(client, responseText);
         }
         break;
       }
@@ -465,6 +681,29 @@ export class VoiceGateway
       });
     } catch (error: any) {
       console.error('[Polly] TTS error:', error.message);
+    }
+  }
+
+  /**
+   * Append a message to the MongoDB conversation session.
+   */
+  private async appendMessage(
+    sessionId: string,
+    role: 'user' | 'assistant',
+    message: string,
+  ) {
+    try {
+      // Only update if session doc already exists (created during register_user)
+      await this.conversationModel.updateOne(
+        { sessionId },
+        {
+          $push: {
+            messages: { role, message, timestamp: new Date() },
+          },
+        },
+      );
+    } catch (error: any) {
+      console.error('❌ Error appending message:', error.message);
     }
   }
 }

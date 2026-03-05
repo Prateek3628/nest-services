@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant - TechGropse</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            background: #000000;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .container { width: 100%; height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .voice-interface { background: transparent; text-align: center; width: 100%; }
+        h1 { color: white; margin-bottom: 10px; font-size: 28px; display: none; }
+        .subtitle { color: white; margin-bottom: 30px; font-size: 14px; display: none; }
+
+        .connection-status {
+            position: fixed; top: 20px; left: 20px; border-radius: 50%;
+            font-size: 12px; font-weight: bold; width: 40px; height: 40px;
+            display: flex; align-items: center; justify-content: center; z-index: 1000;
+        }
+        .connected { background-color: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
+        .disconnected { background-color: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
+
+        .voice-button {
+            width: 200px; height: 200px; border-radius: 50%; border: none;
+            background: radial-gradient(circle at center, rgba(0,145,255,0.8) 0%, rgba(0,100,200,0.6) 50%, rgba(0,50,120,0.4) 100%);
+            color: rgba(0,180,255,0.9); font-size: 64px; cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 80px rgba(0,145,255,0.6), 0 0 120px rgba(0,145,255,0.4), inset 0 0 40px rgba(0,145,255,0.3);
+            margin: 0 auto; display: flex; align-items: center; justify-content: center;
+            position: relative; overflow: visible;
+        }
+        .voice-button::before, .voice-button::after {
+            content: ''; position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%,-50%); width: 100%; height: 100%;
+            border-radius: 50%; border: 2px solid rgba(0,145,255,0.4);
+            animation: wave 2s ease-out infinite; pointer-events: none;
+        }
+        .voice-button::after { animation-delay: 1s; }
+        @keyframes wave {
+            0%   { transform: translate(-50%,-50%) scale(1);   opacity: 0.8; }
+            100% { transform: translate(-50%,-50%) scale(1.8); opacity: 0; }
+        }
+        .voice-button:hover:not(:disabled) { transform: scale(1.05); }
+        .voice-button:active:not(:disabled) { transform: scale(0.98); }
+        .voice-button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .voice-button.recording {
+            background: radial-gradient(circle at center, rgba(0,180,255,0.9) 0%, rgba(0,145,255,0.7) 50%, rgba(0,100,200,0.5) 100%);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        .voice-button.speaking {
+            animation: wobble 0.6s ease-in-out infinite;
+        }
+        .voice-button.speaking::before, .voice-button.speaking::after { animation: wave 1.5s ease-out infinite; }
+        .voice-button.speaking::after { animation-delay: 0.75s; }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50%      { transform: scale(1.05); }
+        }
+        @keyframes wobble {
+            0%, 100% { transform: rotate(0deg) scale(1); }
+            25%      { transform: rotate(-3deg) scale(1.02); }
+            75%      { transform: rotate(3deg) scale(1.02); }
+        }
+        .status-text {
+            color: rgba(255,255,255,0.9); font-size: 18px; margin-top: 60px;
+            min-height: 24px; font-weight: 300; letter-spacing: 0.5px; transition: opacity 0.3s ease;
+        }
+        .status-text.hidden { opacity: 0; }
+        .audio-indicator { display: none; color: rgba(255,255,255,0.7); font-size: 14px; margin-top: 15px; }
+        .audio-indicator.show { display: block; }
+
+        /* ===== Overlay: User Info Form ===== */
+        .overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 9999; backdrop-filter: blur(8px);
+        }
+        .overlay.hidden { display: none; }
+        .form-card {
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 20px; padding: 40px; width: 400px; max-width: 90vw; text-align: center;
+        }
+        .form-card h2 { color: white; font-size: 22px; margin-bottom: 8px; }
+        .form-card p { color: rgba(255,255,255,0.6); font-size: 14px; margin-bottom: 28px; }
+        .form-card input {
+            display: block; width: 100%; padding: 12px 16px; margin-bottom: 14px;
+            border-radius: 10px; border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.08); color: white; font-size: 15px; outline: none;
+        }
+        .form-card input::placeholder { color: rgba(255,255,255,0.35); }
+        .form-card input:focus { border-color: rgba(0,145,255,0.7); }
+        .form-card button {
+            width: 100%; padding: 13px; border: none; border-radius: 10px;
+            background: linear-gradient(135deg, rgba(0,145,255,0.9), rgba(0,100,200,0.9));
+            color: white; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 8px;
+        }
+        .form-card button:hover { opacity: 0.85; }
+        .form-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .form-error { color: #ff6b6b; font-size: 13px; margin-bottom: 10px; min-height: 18px; }
+
+        /* ===== Overlay: Calendar / Availability ===== */
+        .calendar-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 9998; backdrop-filter: blur(8px);
+        }
+        .calendar-overlay.hidden { display: none; }
+        .calendar-card {
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 20px; padding: 40px; width: 420px; max-width: 90vw; text-align: center;
+        }
+        .calendar-card h2 { color: white; font-size: 20px; margin-bottom: 8px; }
+        .calendar-card p { color: rgba(255,255,255,0.6); font-size: 14px; margin-bottom: 24px; }
+        .calendar-card label {
+            display: block; text-align: left; color: rgba(255,255,255,0.7);
+            font-size: 13px; margin-bottom: 4px; margin-top: 10px;
+        }
+        .calendar-card input, .calendar-card select {
+            display: block; width: 100%; padding: 12px 16px; border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08);
+            color: white; font-size: 15px; outline: none; -webkit-appearance: none;
+        }
+        .calendar-card input:focus, .calendar-card select:focus { border-color: rgba(0,145,255,0.7); }
+        .calendar-card select option { background: #1a1a1a; color: white; }
+        .calendar-card button {
+            width: 100%; padding: 13px; border: none; border-radius: 10px;
+            background: linear-gradient(135deg, rgba(0,145,255,0.9), rgba(0,100,200,0.9));
+            color: white; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 18px;
+        }
+        .calendar-card button:hover { opacity: 0.85; }
+        .calendar-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <!-- User Info Form Overlay -->
+    <div id="userFormOverlay" class="overlay hidden">
+        <div class="form-card">
+            <h2>Welcome to TechGropse</h2>
+            <p>Please enter your details to get started</p>
+            <div id="formError" class="form-error"></div>
+            <input type="text"  id="formName"  placeholder="Full Name"     autocomplete="name" />
+            <input type="email" id="formEmail" placeholder="Email Address" autocomplete="email" />
+            <input type="tel"   id="formPhone" placeholder="Phone Number"  autocomplete="tel" />
+            <button id="formSubmitBtn" onclick="submitUserForm()">Start Conversation</button>
+        </div>
+    </div>
+
+    <!-- Calendar / Availability Overlay -->
+    <div id="calendarOverlay" class="calendar-overlay hidden">
+        <div class="calendar-card">
+            <h2>Schedule a Call</h2>
+            <p>When would you like our team to reach out?</p>
+            <label for="calDate">Date</label>
+            <input type="date" id="calDate" />
+            <label for="calTime">Time</label>
+            <input type="time" id="calTime" />
+            <label for="calTimezone">Timezone</label>
+            <select id="calTimezone">
+                <option value="Asia/Kolkata">India (IST)</option>
+                <option value="America/New_York">US Eastern (ET)</option>
+                <option value="America/Chicago">US Central (CT)</option>
+                <option value="America/Denver">US Mountain (MT)</option>
+                <option value="America/Los_Angeles">US Pacific (PT)</option>
+                <option value="Europe/London">UK (GMT/BST)</option>
+                <option value="Europe/Berlin">Central Europe (CET)</option>
+                <option value="Asia/Dubai">UAE (GST)</option>
+                <option value="Asia/Singapore">Singapore (SGT)</option>
+                <option value="Australia/Sydney">Australia (AEST)</option>
+            </select>
+            <button id="calSubmitBtn" onclick="submitAvailability()">Confirm Availability</button>
+        </div>
+    </div>
+
+    <!-- Main Voice Interface -->
+    <div class="container">
+        <div class="voice-interface">
+            <h1>Voice Assistant</h1>
+            <p class="subtitle">TechGropse Virtual Representative</p>
+            <div id="connectionStatus" class="connection-status disconnected">Connecting...</div>
+            <button id="voiceButton" class="voice-button" disabled>&#x1F3A4;</button>
+            <div id="statusText" class="status-text">Hold to speak</div>
+            <div id="audioIndicator" class="audio-indicator" style="display:none;"></div>
+        </div>
+    </div>
+
+<script>
+/* ================================================================
+   Session persistence - sessionStorage survives refresh, dies on tab close
+   ================================================================ */
+var STORAGE_KEY = 'tg_session';
+function loadSession()  { try { var r = sessionStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : null; } catch(e) { return null; } }
+function saveSession(d) { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+function clearSession() { sessionStorage.removeItem(STORAGE_KEY); }
+
+// Generate a stable session ID that persists across refreshes (UUID v4)
+function generateSessionId() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
+
+var session           = loadSession();
+var currentSessionId  = session ? session.sessionId : generateSessionId();
+var userInfoCollected = session ? session.userInfoCollected : false;
+
+// If this is a brand-new session, persist the generated ID immediately
+if (!session) {
+    saveSession({ sessionId: currentSessionId, userInfoCollected: false });
+}
+
+/* ================================================================
+   Socket.IO
+   ================================================================ */
+var socket = io('http://localhost:5002', {
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionDelay: 2000,
+    reconnectionAttempts: 10,
+    timeout: 60000,
+    auth: function(cb) { cb(currentSessionId ? { session_id: currentSessionId } : {}); }
+});
+
+socket.onAny(function(ev) { console.log('[SOCKET] ' + ev + ':', Array.prototype.slice.call(arguments, 1)); });
+socket.on('connect_error', function(e) { console.error('[SOCKET] connect_error:', e); });
+
+/* ================================================================
+   DOM refs
+   ================================================================ */
+var voiceButton       = document.getElementById('voiceButton');
+var statusText        = document.getElementById('statusText');
+var connectionStatus  = document.getElementById('connectionStatus');
+var audioIndicator    = document.getElementById('audioIndicator');
+
+var mediaRecorder = null, audioChunks = [], isRecording = false;
+var mediaStream = null, isListening = false, silenceDelay = 2000;
+var audioContext = null, isPlayingAudio = false, currentAudio = null;
+
+var SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+var recognition = null, isUsingWebSpeech = false;
+if (SpeechRecognitionAPI) {
+    recognition = new SpeechRecognitionAPI();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    isUsingWebSpeech = true;
+    console.log('Web Speech API available');
+}
+
+/* ================================================================
+   User Info Form
+   ================================================================ */
+function showUserForm() { document.getElementById('userFormOverlay').classList.remove('hidden'); }
+function hideUserForm() { document.getElementById('userFormOverlay').classList.add('hidden'); }
+
+function submitUserForm() {
+    var name  = document.getElementById('formName').value.trim();
+    var email = document.getElementById('formEmail').value.trim();
+    var phone = document.getElementById('formPhone').value.trim();
+    var err   = document.getElementById('formError');
+
+    if (!name || !email || !phone) { err.textContent = 'Please fill in all fields'; return; }
+    if (!/\S+@\S+\.\S+/.test(email)) { err.textContent = 'Please enter a valid email'; return; }
+    err.textContent = '';
+
+    var btn = document.getElementById('formSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
+
+    socket.emit('register_user', {
+        name: name, email: email, phone: phone,
+        sessionId: currentSessionId,
+    });
+}
+
+socket.on('user_registered', function(data) {
+    var btn = document.getElementById('formSubmitBtn');
+    btn.disabled = false; btn.textContent = 'Start Conversation';
+    if (data.success) {
+        userInfoCollected = true;
+        currentSessionId = data.sessionId || currentSessionId;
+        saveSession({ sessionId: currentSessionId, userInfoCollected: true,
+                      userName: document.getElementById('formName').value.trim() });
+        hideUserForm();
+        // Now unlock voice — Python session is started server-side
+        initMicrophone().then(function() {
+            voiceButton.disabled = false;
+            statusText.textContent = 'Hold to speak';
+        });
+    } else {
+        document.getElementById('formError').textContent = data.message || 'Failed to save';
+    }
+});
+
+/* ================================================================
+   Calendar / Availability
+   ================================================================ */
+function showCalendar() {
+    var today = new Date().toISOString().split('T')[0];
+    var d = document.getElementById('calDate');
+    d.min = today; d.value = today;
+    var nx = new Date(Date.now() + 3600000);
+    document.getElementById('calTime').value =
+        String(nx.getHours()).padStart(2,'0') + ':' + String(nx.getMinutes()).padStart(2,'0');
+    try {
+        var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        var sel = document.getElementById('calTimezone');
+        for (var i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === tz) { sel.options[i].selected = true; break; }
+        }
+    } catch(e) {}
+    document.getElementById('calendarOverlay').classList.remove('hidden');
+}
+function hideCalendar() { document.getElementById('calendarOverlay').classList.add('hidden'); }
+
+function submitAvailability() {
+    var date = document.getElementById('calDate').value;
+    var time = document.getElementById('calTime').value;
+    var tz   = document.getElementById('calTimezone').value;
+    if (!date || !time) { alert('Please select date and time'); return; }
+    var btn = document.getElementById('calSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Submitting...';
+    socket.emit('submit_availability', { sessionId: currentSessionId, date: date, time: time, timezone: tz });
+}
+
+socket.on('availability_saved', function(data) {
+    var btn = document.getElementById('calSubmitBtn');
+    btn.disabled = false; btn.textContent = 'Confirm Availability';
+    if (data.success) { hideCalendar(); console.log('Availability submitted'); }
+});
+
+socket.on('show_calendar', function() { console.log('show_calendar trigger'); showCalendar(); });
+
+/* ================================================================
+   Audio helpers
+   ================================================================ */
+function initAudioContext() {
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+}
+function initMicrophone() {
+    return navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+        mediaStream = stream;
+    }).catch(function(e) {
+        console.error('Mic error:', e);
+        statusText.textContent = 'Microphone denied';
+        voiceButton.disabled = true;
+    });
+}
+
+/* ================================================================
+   Recording
+   ================================================================ */
+function startRecording() {
+    if (!userInfoCollected) return; // Block all activity before form
+    if (isPlayingAudio) stopAllAudio();
+    if (isUsingWebSpeech && recognition) { startWebSpeechRecognition(); }
+    else { startMediaRecorderRecording(); }
+}
+
+function startWebSpeechRecognition() {
+    if (!recognition) return;
+    isRecording = true; isListening = true;
+    voiceButton.classList.add('recording'); statusText.textContent = 'Listening...';
+    var finalT = '', lastI = 0;
+    recognition.onresult = function(ev) {
+        var interim = '';
+        for (var i = ev.resultIndex; i < ev.results.length; i++) {
+            var t = ev.results[i][0].transcript;
+            if (ev.results[i].isFinal) { finalT += t + ' '; }
+            else {
+                interim += t; statusText.textContent = 'Hearing: "' + interim + '"';
+                if (interim.length > 10 && Date.now() - lastI > 1500) { lastI = Date.now(); socket.emit('interim_speech', { text: interim }); }
+            }
+        }
+        if (finalT.trim()) { sendTranscript(finalT.trim()); finalT = ''; recognition.stop(); }
+    };
+    recognition.onerror = function(e) {
+        statusText.textContent = e.error === 'no-speech' ? 'No speech' : 'Error: ' + e.error;
+        isRecording = false; voiceButton.classList.remove('recording');
+    };
+    recognition.onend = function() {
+        isRecording = false; isListening = false;
+        voiceButton.classList.remove('recording'); statusText.textContent = 'Processing...';
+    };
+    try { recognition.start(); } catch(e) {}
+}
+
+function startMediaRecorderRecording() {
+    var p = mediaStream ? Promise.resolve() : initMicrophone();
+    p.then(function() {
+        if (!mediaStream) return;
+        mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' });
+        audioChunks = [];
+        mediaRecorder.ondataavailable = function(e) { audioChunks.push(e.data); };
+        mediaRecorder.onstop = function() {
+            sendAudio(new Blob(audioChunks, { type: 'audio/webm' }));
+        };
+        mediaRecorder.start(100);
+        isRecording = true; isListening = true;
+        voiceButton.classList.add('recording'); statusText.textContent = 'Listening...';
+        startSilenceDetection();
+    });
+}
+
+function startSilenceDetection() {
+    if (!mediaStream) return;
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var an = ctx.createAnalyser();
+    ctx.createMediaStreamSource(mediaStream).connect(an);
+    an.fftSize = 2048;
+    var buf = new Uint8Array(an.frequencyBinCount);
+    var sStart = Date.now(), speaking = false;
+    function chk() {
+        if (!isRecording) { ctx.close(); return; }
+        an.getByteTimeDomainData(buf);
+        var s = 0;
+        for (var i = 0; i < buf.length; i++) { var n = (buf[i]-128)/128; s += n*n; }
+        var v = Math.sqrt(s/buf.length);
+        if (v > 0.02) { speaking = true; sStart = Date.now(); }
+        else if (speaking && Date.now() - sStart > silenceDelay) { stopRecording(); ctx.close(); return; }
+        requestAnimationFrame(chk);
+    }
+    chk();
+}
+
+function stopRecording() {
+    if (mediaRecorder && isRecording) { mediaRecorder.stop(); }
+    if (isUsingWebSpeech && recognition) { try { recognition.stop(); } catch(e) {} }
+    isRecording = false; isListening = false;
+    voiceButton.classList.remove('recording');
+    statusText.textContent = 'Processing...';
+}
+
+function interruptAI() { if (isPlayingAudio) { stopAllAudio(); setTimeout(startRecording, 100); } }
+
+function sendAudio(blob) {
+    if (blob.size < 1000) { statusText.textContent = 'Too short'; return; }
+    var r = new FileReader();
+    r.onloadend = function() { socket.emit('voice_input', { audio: r.result.split(',')[1], format: 'webm' }); };
+    r.readAsDataURL(blob);
+}
+
+function sendTranscript(text) { statusText.textContent = 'Processing...'; socket.emit('text_query', { text: text }); }
+
+function stopAllAudio() {
+    if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; currentAudio = null; }
+    isPlayingAudio = false; audioIndicator.classList.remove('show');
+    voiceButton.textContent = '\u{1F3A4}';
+    voiceButton.classList.remove('speaking');
+    voiceButton.disabled = false; statusText.classList.remove('hidden');
+    statusText.textContent = 'Listening...';
+}
+
+voiceButton.addEventListener('click', function() { if (isPlayingAudio) interruptAI(); });
+
+/* ================================================================
+   Socket events
+   ================================================================ */
+socket.on('connect', function() {
+    console.log('Connected:', socket.id);
+    connectionStatus.textContent = '\u2705';
+    connectionStatus.className = 'connection-status connected';
+
+    // Do NOT enable voice or start recording yet — wait for form or session check
+    statusText.textContent = 'Please fill in your details';
+    voiceButton.disabled = true;
+
+    if (session && session.sessionId && session.userInfoCollected) {
+        socket.emit('check_session', { sessionId: session.sessionId });
+    } else {
+        showUserForm();
+    }
+});
+
+socket.on('session_check_result', function(data) {
+    if (data.exists) {
+        currentSessionId = data.sessionId; userInfoCollected = true;
+        hideUserForm();
+        // Unlock voice — Python session is started server-side
+        initMicrophone().then(function() {
+            voiceButton.disabled = false;
+            statusText.textContent = 'Hold to speak';
+        });
+    } else {
+        clearSession(); session = null; userInfoCollected = false; showUserForm();
+    }
+});
+
+socket.on('status', function(data) {
+    // Do NOT overwrite the stable sessionId with the ephemeral socket id.
+    // The status event is just a connection acknowledgement.
+    console.log('Status:', data.message);
+});
+
+socket.on('disconnect', function(reason) {
+    connectionStatus.textContent = '\u274C';
+    connectionStatus.className = 'connection-status disconnected';
+    voiceButton.disabled = true; statusText.textContent = 'Disconnected';
+    if (isRecording) stopRecording();
+    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+});
+
+socket.on('transcription_start', function() { statusText.textContent = 'Transcribing...'; });
+socket.on('transcription_complete', function() { statusText.textContent = 'Thinking...'; });
+
+socket.on('text_response', function(data) {
+    if (!userInfoCollected) return; // Ignore responses before form submitted
+    console.log('text_response:', data);
+    statusText.textContent = 'Hold to speak'; voiceButton.disabled = false;
+    setTimeout(function() {
+        var calH = document.getElementById('calendarOverlay').classList.contains('hidden');
+        var frmH = document.getElementById('userFormOverlay').classList.contains('hidden');
+        if (!isRecording && !isPlayingAudio && calH && frmH) startRecording();
+    }, 500);
+});
+
+/* Polly TTS from Nest */
+socket.on('tts_audio', function(data) {
+    if (!userInfoCollected) return; // Ignore TTS before form submitted
+    console.log('TTS audio received');
+    initAudioContext();
+    isPlayingAudio = true;
+    voiceButton.textContent = '\u23F8\uFE0F';
+    voiceButton.classList.add('speaking'); voiceButton.classList.remove('recording');
+    statusText.textContent = 'Click to interrupt';
+    if (isRecording) stopRecording();
+
+    try {
+        var bin = atob(data.audio);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var blob = new Blob([bytes], { type: 'audio/mpeg' });
+        var url = URL.createObjectURL(blob);
+        currentAudio = new Audio(url);
+        currentAudio.play();
+        currentAudio.onended = function() {
+            URL.revokeObjectURL(url); currentAudio = null; isPlayingAudio = false;
+            voiceButton.textContent = '\u{1F3A4}'; voiceButton.classList.remove('speaking');
+            voiceButton.disabled = false;
+            var calH = document.getElementById('calendarOverlay').classList.contains('hidden');
+            if (userInfoCollected && calH) {
+                statusText.textContent = 'Listening...';
+                setTimeout(function() { if (!isRecording && !isPlayingAudio) startRecording(); }, 500);
+            }
+        };
+        currentAudio.onerror = function() { URL.revokeObjectURL(url); currentAudio = null; isPlayingAudio = false; };
+    } catch(e) { console.error('TTS error:', e); isPlayingAudio = false; }
+});
+
+socket.on('error', function(data) {
+    console.error('Error:', data);
+    statusText.textContent = 'Error: ' + data.message;
+    setTimeout(function() { statusText.textContent = 'Hold to speak'; }, 3000);
+});
+
+document.addEventListener('click', initAudioContext);
+var formInputs = document.querySelectorAll('.form-card input');
+for (var i = 0; i < formInputs.length; i++) {
+    formInputs[i].addEventListener('keydown', function(e) { if (e.key === 'Enter') submitUserForm(); });
+}
+</script>
+</body>
+</html>
