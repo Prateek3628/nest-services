@@ -46,6 +46,10 @@ lerna-debug.log*
 .temp
 .tmp
 
+
+ecosystem.config.js
+
+
 # Runtime data
 pids
 *.pid
