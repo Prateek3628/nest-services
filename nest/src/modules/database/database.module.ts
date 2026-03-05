@@ -23,6 +23,9 @@ const dbLogger = new Logger('DatabaseModule');
         }
         return {
           uri,
+          serverSelectionTimeoutMS: 8000,   // fail fast if Atlas unreachable
+          connectTimeoutMS: 10000,
+          socketTimeoutMS: 15000,
           connectionFactory: (connection: any) => {
             connection.on('connected', () => dbLogger.log('✅ MongoDB connected successfully'));
             connection.on('error', (err: any) => dbLogger.error(`❌ MongoDB connection error: ${err.message}`));
