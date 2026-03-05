@@ -10,7 +10,7 @@ async function bootstrap() {
     credentials: true,
   });
   
-  await app.listen(process.env.PORT ?? 5002);
-  console.log(`🚀 Nest Gateway listening on http://localhost:${process.env.PORT ?? 5002}`);
+  await app.listen(process.env.PORT ?? 2096, '0.0.0.0');
+  console.log(`🚀 Nest Gateway listening on http://0.0.0.0:${process.env.PORT ?? 2096}`);
 }
 bootstrap();
