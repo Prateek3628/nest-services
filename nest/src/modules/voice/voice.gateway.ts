@@ -11,7 +11,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 
 import { PythonSocket } from '../python/python.socket';
-import { PollyService } from '../tts/polly.service';
+import { TtsService } from '../tts/tts.service';
 
 import {
   SessionCache,
@@ -80,7 +80,7 @@ export class VoiceGateway
     private readonly sttRawCache: SttRawCache,
     private readonly exactResponseCache: ExactResponseCache,
     private readonly ttsRelayCache: TtsRelayCache,
-    private readonly pollyService: PollyService,
+    private readonly ttsService: TtsService,
     @InjectModel(UserContact.name)
     private readonly userContactModel: Model<UserContactDocument>,
     @InjectModel(ConversationSession.name)
@@ -678,16 +678,18 @@ export class VoiceGateway
    */
   private async emitPollyAudio(client: Socket, text: string) {
     try {
-      const audioBuffer = await this.pollyService.synthesizeSpeech(
-        text,
-        process.env.POLLY_VOICE_ID || 'Joey',
-      );
+      const voiceId =
+        process.env.TTS_PROVIDER?.toLowerCase() === 'elevenlabs'
+          ? process.env.ELEVEN_LABS_VOICE_ID
+          : process.env.POLLY_VOICE_ID || 'Joey';
+
+      const audioBuffer = await this.ttsService.synthesizeSpeech(text, voiceId);
       client.emit('tts_audio', {
         audio: audioBuffer.toString('base64'),
         format: 'mp3',
       });
     } catch (error: any) {
-      console.error('[Polly] TTS error:', error.message);
+      console.error('[TTS] audio generation error:', error.message);
     }
   }
 

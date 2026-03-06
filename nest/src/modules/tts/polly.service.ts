@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PollyClient, SynthesizeSpeechCommand, VoiceId } from '@aws-sdk/client-polly';
 import { Readable } from 'stream';
+import { TtsProvider } from './tts.interface';
 
 @Injectable()
-export class PollyService {
+export class PollyService implements TtsProvider {
   private readonly logger = new Logger(PollyService.name);
   private polly: PollyClient;
 
